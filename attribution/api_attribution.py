@@ -17,6 +17,7 @@ from .attribution_metrics import (
     NEAR_ZERO_PROB,
     cosine_similarity_attribution,
     token_prob_attribution,
+    target_similarity_attribution, target_similarity_attribution_st, target_similarity_attribution_llm,
 )
 from .base import BaseAsyncLLMAttributor
 from .experiment_logger import ExperimentLogger
@@ -68,6 +69,7 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
         logger: Optional[ExperimentLogger] = None,
         unit_definition: Literal["token", "word"] = "token",
         ignore_output_token_location: bool = True,
+        target_output: str = None,
     ):
         llm_input = LLMInput(
             input_string=original_input, tokenizer=self.tokenizer, unit_definition=unit_definition
@@ -97,13 +99,14 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
 
         for perturbation, output in zip(perturbations, outputs):
             for strategy in attribution_strategies:
-                _ = self._get_scores(
+                _ = await self._get_scores(
                     perturbation=perturbation,
                     perturbed_output=output,
                     original_output=original_output,
                     attribution_strategy=strategy,
                     ignore_output_token_location=ignore_output_token_location,
                     logger=logger,
+                    target_output=target_output,
                 )
 
         if logger:
@@ -123,6 +126,7 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
         ignore_output_token_location: bool = True,
         logger: Optional[ExperimentLogger] = None,
         verbosity: int = 0,
+        target_output: str = None,
     ) -> None:
         """
         Hierarchical pertubation method. Uses a sliding window to split the input into chunks and continues to subdivided each chunk until the attribution falls below the dynamic threshold.
@@ -205,7 +209,7 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
             for i, (perturbation, output, mask) in enumerate(zip(perturbations, outputs, masks)):
                 for strategy in attribution_strategies:
                     # Logging each attribution strategy metric
-                    attribution_scores, norm_attribution_scores = self._get_scores(
+                    attribution_scores, norm_attribution_scores = await self._get_scores(
                         perturbation=perturbation,
                         perturbed_output=output,
                         original_output=original_output,
@@ -214,6 +218,7 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
                         ignore_output_token_location=ignore_output_token_location,
                         logger=logger,
                         depth=stage,
+                        target_output=target_output,
                     )
 
                     # Define threshold based on the chosen strategy
@@ -344,7 +349,7 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
         # Now the perturbed output contains the same tokens as the original output, but with the logprobs from the perturbed output.
         return location_invariant_output
 
-    def _get_scores(
+    async def _get_scores(
         self,
         perturbation: PerturbedLLMInput,
         perturbed_output: StrictChoice,
@@ -354,6 +359,7 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
         ignore_output_token_location: bool = True,
         depth: int = 0,
         logger: Optional[ExperimentLogger] = None,
+        target_output: str = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if ignore_output_token_location:
             perturbed_output = self._make_output_location_invariant(
@@ -370,6 +376,31 @@ class OpenAIAttributor(BaseAsyncLLMAttributor):
         elif attribution_strategy == "prob_diff":
             token_attributions = token_prob_attribution(
                 original_output.logprobs, perturbed_output.logprobs
+            )
+        elif attribution_strategy == "target_output":
+            token_attributions = target_similarity_attribution(
+                original_output.message.content,
+                perturbed_output.message.content,
+                target_output,
+                self.tokenizer,
+                self.token_embeddings
+            )
+        elif attribution_strategy == "target_output_st":
+            token_attributions = target_similarity_attribution_st(
+                original_output.message.content,
+                perturbed_output.message.content,
+                target_output,
+                self.tokenizer,
+                self.token_embeddings,
+            )
+        elif attribution_strategy == "target_output_llm":
+            token_attributions = await target_similarity_attribution_llm(
+                original_output.message.content,
+                perturbed_output.message.content,
+                target_output,
+                self.tokenizer,
+                self.token_embeddings,
+                self.openai_client,
             )
         else:
             raise ValueError(f"Unknown attribution strategy: {attribution_strategy}")
